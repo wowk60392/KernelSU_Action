@@ -41,8 +41,10 @@ jobs:
             CUSTOM_GCC_32_BRANCH
             CUSTOM_GCC_32_BIN
             ENABLE_KERNELSU
-            KERNELSU_TAG
+            SUKISU_BRANCH
             ADD_KPROBES_CONFIG
+            ADD_KSU_MANUAL_HOOK
+            ADD_KPM_CONFIG
             DISABLE-LTO
             ADD_OVERLAYFS_CONFIG
             DISABLE_CC_WERROR
@@ -204,13 +206,13 @@ jobs:
             echo "HAVE_SOURCE_BOOT_IMAGE=true" >> $GITHUB_ENV
         fi
 
-    - name: Setup KernelSU
+    - name: Setup SukiSU
       if: env.ENABLE_KERNELSU == 'true'
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-        curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s ${{ env.KERNELSU_TAG }}
-        KSU_VERSION=$(cd KernelSU && expr $(/usr/bin/git rev-list --count HEAD) + 10200)
-        echo "UPLOADNAME=-KernelSU_$KSU_VERSION" >> $GITHUB_ENV
+        curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s ${{ env.SUKISU_BRANCH }}
+        SUKISU_VERSION=$(cd KernelSU && expr $(/usr/bin/git rev-list --count HEAD) + 10200 2>/dev/null || echo "sukisu")
+        echo "UPLOADNAME=-SukiSU_$SUKISU_VERSION" >> $GITHUB_ENV
 
     - name: Setup Configuration for Kernel
       run: |
@@ -224,14 +226,15 @@ jobs:
             ALL_CONFIGS="$BASE_CONFIG"
             CONFIG_TARGET="$BASE_CONFIG"
         fi
+        # Always ensure CONFIG_KSU=y when KernelSU/SukiSU is enabled
+        if grep -q "CONFIG_KSU" $ALL_CONFIGS; then
+            sed -i 's/# CONFIG_KSU is not set/CONFIG_KSU=y/g' $ALL_CONFIGS
+            sed -i 's/CONFIG_KSU=n/CONFIG_KSU=y/g' $ALL_CONFIGS
+        else
+            echo "CONFIG_KSU=y" >> $CONFIG_TARGET
+        fi
         if [ ${{ env.APPLY_KSU_PATCH }} = true ]; then
             bash $GITHUB_WORKSPACE/patches/patches.sh
-            if grep -q "CONFIG_KSU" $ALL_CONFIGS; then
-                sed -i 's/# CONFIG_KSU is not set/CONFIG_KSU=y/g' $ALL_CONFIGS
-                sed -i 's/CONFIG_KSU=n/CONFIG_KSU=y/g' $ALL_CONFIGS
-            else
-                echo "CONFIG_KSU=y" >> $CONFIG_TARGET
-            fi
         fi
         if [ ${{ env.ADD_KPROBES_CONFIG }} = true -a ${{ env.APPLY_KSU_PATCH }} != true ]; then
             echo "CONFIG_MODULES=y" >> $CONFIG_TARGET
@@ -250,6 +253,31 @@ jobs:
         fi
         if [ ${{ env.DISABLE_CC_WERROR }} = true ]; then
             echo "CONFIG_CC_WERROR=n" >> $CONFIG_TARGET
+        fi
+        # SELinux: bypass bounded_transition for su domain (fixes ksud Permission denied)
+        if [ -f security/selinux/ss/services.c ] && ! grep -q "KernelSU: allow transition to su" security/selinux/ss/services.c; then
+            sed -i '/int security_bounded_transition/,/read_lock(&policy_rwlock);/{
+/read_lock(&policy_rwlock);/i\
+	/* KernelSU: allow transition to su domain, bypass bounds check */\
+	{\
+		struct context *nc = sidtab_search(&sidtab, new_sid);\
+		if (nc) {\
+			char *name = sym_name(&policydb, SYM_TYPES, nc->type - 1);\
+			if (name && strcmp(name, "su") == 0)\
+				return 0;\
+		}\
+	}
+}' security/selinux/ss/services.c
+        fi
+        # SukiSU: KSU_MANUAL_HOOK for non-GKI manual syscall hooking
+        if [ ${{ env.ADD_KSU_MANUAL_HOOK }} = true ]; then
+            echo "CONFIG_KSU_MANUAL_HOOK=y" >> $CONFIG_TARGET
+        fi
+        # SukiSU: KPM Kernel Patch Module support (optional)
+        if [ ${{ env.ADD_KPM_CONFIG }} = true ]; then
+            echo "CONFIG_KPM=y" >> $CONFIG_TARGET
+            echo "CONFIG_KALLSYMS=y" >> $CONFIG_TARGET
+            echo "CONFIG_KALLSYMS_ALL=y" >> $CONFIG_TARGET
         fi
 
     - name: Setup ccache
