@@ -254,8 +254,12 @@ jobs:
         if [ ${{ env.DISABLE_CC_WERROR }} = true ]; then
             echo "CONFIG_CC_WERROR=n" >> $CONFIG_TARGET
         fi
-        # SELinux: bypass bounded_transition for su domain (fixes ksud Permission denied)
+        # SELinux: bypass bounded_transition for su domain
         bash $GITHUB_WORKSPACE/patches/selinux.sh
+        # SukiSU kernel 4.9 compat: syscall_fn_t not defined in older kernels
+        sed -i '1s/^/#include <asm\/syscall.h>\n/' drivers/kernelsu/hook/syscall_hook.h
+        # SukiSU kernel 4.9 compat: MODULE_IMPORT_NS not available before 5.4
+        sed -i '/MODULE_IMPORT_NS/i\#ifndef MODULE_IMPORT_NS\n#define MODULE_IMPORT_NS(ns)\n#endif' drivers/kernelsu/core/init.c
         # SukiSU: KSU_MANUAL_HOOK for non-GKI manual syscall hooking
         if [ ${{ env.ADD_KSU_MANUAL_HOOK }} = true ]; then
             echo "CONFIG_KSU_MANUAL_HOOK=y" >> $CONFIG_TARGET
